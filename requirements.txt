@@ -1,0 +1,12 @@
+pymupdf4llm
+pdfplumber
+chromadb
+requests
+sentence-transformers
+python-dotenv
+psycopg2-binary
+rapidocr-onnxruntime
+pytest
+pytest-asyncio
+scikit-learn
+aiohttp>=3.8.0

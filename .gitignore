@@ -1,0 +1,31 @@
+# 1. Environment & Python
+env/
+venv/
+__pycache__/
+*.pyc
+.idea/
+
+# 2. Local Databases
+chromadb/
+
+# 3. Test Data & Zips
+Hundred Plus Test.zip
+Hundred_Plus_Test/
+Stress_Test_101.zip
+Stress_Test_101/
+Test Data/
+test_data_101/
+test_input/
+test_suit/
+test_suit_backup/
+SUPPLIERS/
+*.zip
+*.pdf
+
+# 4. Outputs & Logs
+output/
+input/
+reports/
+*.log
+*.jsonl
+evaluation_report.csv
