@@ -24,7 +24,7 @@ SUPPLIERS/
 
 # 4. Outputs & Logs
 output/
-input/
+Test_101/
 reports/
 *.log
 *.jsonl

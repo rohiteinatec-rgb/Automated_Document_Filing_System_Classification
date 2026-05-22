@@ -10,3 +10,5 @@ pytest
 pytest-asyncio
 scikit-learn
 aiohttp>=3.8.0
+apprise
+fastapi

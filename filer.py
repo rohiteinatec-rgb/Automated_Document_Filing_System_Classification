@@ -9,6 +9,7 @@ from errors import PDFProcessingError
 from pathlib import Path
 from datetime import datetime
 from config import Config
+from sanitizer import sanitise_filename
 
 
 class Filer:
@@ -26,15 +27,15 @@ class Filer:
         ext        = Path(original_filename).suffix.lower() or ".pdf"
         dt_stamp   = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-        tag     = Filer.sanitise(tag.lower())
-        company = Filer.sanitise(company)
+        tag_safe     = sanitise_filename(tag.lower())
+        company_safe = sanitise_filename(company)
 
         # Format: {tag}_{company}_{original}_{datetime}
-        if company and company.lower() not in ("unknown", ""):
-            new_stem = f"{tag}_{company}_{clean_stem}_{dt_stamp}"
+        if company_safe and company_safe.lower() not in ("unknown", ""):
+            new_stem = f"{tag_safe}_{company_safe}_{clean_stem}_{dt_stamp}"
         else:
         # No company extracted — keep format consistent, use placeholder
-            new_stem = f"{tag}_unknown_{clean_stem}_{dt_stamp}"
+            new_stem = f"{tag_safe}_unknown_{clean_stem}_{dt_stamp}"
 
         # Remove forbidden characters
         for ch in Config.FILENAME_FORBIDDEN_CHARS:
@@ -44,16 +45,6 @@ class Filer:
             new_stem = new_stem.replace("__", "_")
 
         return new_stem + ext
-
-    @staticmethod
-    def sanitise(s: str) -> str:
-        s = unicodedata.normalize("NFD", s)
-        s = s.encode("ascii", "ignore").decode("ascii")
-        s = re.sub(r'[<>:"/\\|?*,.]', '_', s).strip('_')  # added comma and dot
-        s = re.sub(r'\s+', '_', s)
-        while '__' in s:
-            s = s.replace('__', '_')
-        return s
 
     def _strip_existing_tag(self, filename: str) -> str:
         """Prevent double-tagging: invoice_test.pdf → test"""
@@ -81,23 +72,22 @@ class Filer:
         # 🔴 NEW: The Operational Logic Gate
         # If confidence is low, or the AI explicitly rejected the file via the prompt rules
         needs_review = (
-                confidence < 0.75 or
+                confidence < Config.CONFIDENCE_THRESHOLD or
                 tag.lower() == "uncertain" or
                 company.lower() in ("unknown", "")
         )
-
+        safe_company = sanitise_filename(original_filename)
         # Build new filename with datetime stamp
-        new_filename  = self.build_new_filename(tag, company, original_filename)
+        new_filename  = self.build_new_filename(tag, company, safe_company)
 
         # 🔴 NEW: Dynamic Routing
         if needs_review:
-            target_folder = Path(Config.OUTPUT_ROOT) / "_HUMAN_REVIEW"
+            target_folder = Path(Config.OUTPUT_ROOT) / "UNCERTAIN"
             action = "review"
         else:
             # Enforce the rigorous Company/Tag taxonomy for clean files
-            clean_company = self.sanitise(company)
-            clean_tag = self.sanitise(tag)
-            target_folder = Path(Config.OUTPUT_ROOT) / clean_company / clean_tag
+            mapped_folder_name = Config.get_folder(tag)
+            target_folder = Path(Config.OUTPUT_ROOT) / mapped_folder_name
             action = "filed"
 
         target_folder.mkdir(parents=True, exist_ok=True)

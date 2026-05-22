@@ -15,7 +15,7 @@ app = FastAPI(title="ADFS Human-In-The-Loop API")
 # Allow your local frontend UI to talk to this API safely
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"], # Restrict this to your UI's local port
+    allow_origins=["*"], # Restrict this to your UI's local port
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

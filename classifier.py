@@ -141,7 +141,7 @@ class Classifier:
         ~5-15 seconds. Only extracts company name + confidence.
         """
         payload = {
-            "model":   Config.OLLAMA_MODEL,
+            "model":   Config.OLLAMA_MODEL_FAST,
             "prompt":  prompt,
             "stream":  False,
             "think":   False,          # /no_think injected into prompt
@@ -160,7 +160,7 @@ class Classifier:
                     self.metrics.record_metric(
                         "classifier.latency_ms",
                         t_elapsed_ms,
-                        {"stage": "fast_scan", "model": Config.OLLAMA_MODEL}
+                        {"stage": "fast_scan", "model": Config.OLLAMA_MODEL_FAST}
                     )
 
                     raw = data.get("response", "")
@@ -184,7 +184,7 @@ class Classifier:
         ~30-120 seconds depending on document complexity.
         """
         payload = {
-            "model":   Config.OLLAMA_MODEL,
+            "model":   Config.OLLAMA_MODEL_DEEP,
             "prompt":  prompt,
             "stream":  False,
             "think":   True,
@@ -203,7 +203,7 @@ class Classifier:
                     self.metrics.record_metric(
                         "classifier.latency_ms",
                         t_elapsed_ms,
-                        {"stage": "deep_scan", "model": Config.OLLAMA_MODEL}
+                        {"stage": "deep_scan", "model": Config.OLLAMA_MODEL_DEEP}
                     )
 
                     raw = data.get("response", "")
@@ -260,7 +260,7 @@ class Classifier:
     # ─────────────────────────────────────────────────────────────────
     async def classify(self, text: str, original_filename: str) -> ClassificationResult:
         quality_eval = self.quality.evaluate(text)
-        if not quality_eval.get("passed", True):
+        if not quality_eval.get("passed", True)and len(text.strip()) < 100:
             if self.debug:
                 print(f"  [Router] 🛑 PRE-FLIGHT REJECT: {quality_eval.get('issues', 'Low Quality')}")
             return self._empty_result(original_filename)
@@ -274,7 +274,8 @@ class Classifier:
             ## Query the ephemeral vector DB using pure Semantic Intent (Language Agnostic)
             rag_query = "Identification of the primary supplier, issuing company, legal vendor, and billing transaction details."
             # Search all chunks EXCEPT chunk 0 (which is the header we always keep)
-            retrieved = await self.retriever.get_relevant_chunks(chunks[1:], query=rag_query, top_k=2)            # Combine Header + Best Matches into the perfect AI payload
+            searchable_chunks = chunks[1:9]
+            retrieved = await self.retriever.get_relevant_chunks(searchable_chunks, query=rag_query, top_k=2)           # Combine Header + Best Matches into the perfect AI payload
             llm_context = chunks[0] + "\n\n...[SNIPPED]...\n\n" + retrieved
         else:
             llm_context = chunks[0] if chunks else ""
@@ -318,7 +319,7 @@ class Classifier:
             print(f"  [Router] 🧠 Stage 3: Deep-Scan (Fast-Triage was '{fast_tag}' at {fast_conf:.2f})")
 
         quality_eval = self.quality.evaluate(raw_full_text)
-        if not quality_eval.get("passed", True):
+        if not quality_eval.get("passed", True) and len(raw_full_text.strip()) < 100:
             if self.debug:
                 print(f"  [Router] 🛑 FAST FAIL: Document failed quality gate")
             return self._empty_result(original_filename)
@@ -408,6 +409,59 @@ class Classifier:
         # (e.g., AI says "Global Logistics Iberia", text says "Global Logistics". 2/3 = 66%. Passes.)
         return match_ratio < 0.50
 
+    def _apply_deterministic_guardrails(self, tag_input: str, company: str, text: str) -> tuple[str, str, float]:
+        if not text:
+            return tag_input, company, None
+
+        norm_text = text.lower()
+
+        # ---------------------------------------------------------
+        # GUARDRAIL 1: Prompt Injection Shield
+        # Catches adversarial instructions across English & Spanish
+        # and prevents direct JSON-key injection attempts.
+        # ---------------------------------------------------------
+        injection_pattern = re.compile(
+            r'\b(ignore|disregard|forget|override|bypass).{0,30}(instruction|prompt|rule|system|context)\b|'
+            r'\b(ignora|olvida|omite|descarta).{0,30}(instrucci|prompt|regla|sistema)\b|'
+            r'("tag"\s*:|tag\s*:|company\s*:|confidence\s*:)',
+            re.IGNORECASE
+        )
+        if injection_pattern.search(text):
+            if self.debug: print("  [Guardrail] 🛑 Prompt Injection attempt detected.")
+            return "uncertain", "unknown", 0.40
+
+        # ---------------------------------------------------------
+        # GUARDRAIL 2: Customs & Logistics Blacklist
+        # Upgraded to Regex to handle OCR accent loss (u vs ú)
+        # ---------------------------------------------------------
+        dua_pattern = re.compile(r'\b(dua|documento [uú]nico administrativo|aduana|bill of lading)\b', re.IGNORECASE)
+        if tag_input == "factura" and dua_pattern.search(text):
+            if self.debug: print("  [Guardrail] 🛑 DUA/Customs term detected.")
+            return "uncertain", "unknown", 0.40
+
+        # ---------------------------------------------------------
+        # GUARDRAIL 3: Email Chain Rejector
+        # Instantly flags forwarded threads that bypass the LLM constraints
+        # ---------------------------------------------------------
+        email_pattern = re.compile(r'\b(from:|to:|subject:|fw:|fwd:|de:|para:|asunto:)\b', re.IGNORECASE)
+        if tag_input == "factura" and len(email_pattern.findall(text)) >= 2:
+            if self.debug: print("  [Guardrail] 🛑 Email chain detected.")
+            return "uncertain", "unknown", 0.40
+
+        # ---------------------------------------------------------
+        # GUARDRAIL 4: Tax ID Enforcer (International SaaS Fix)
+        # Expanded the trailing character bound to {1,2} to allow
+        # Irish/EU VAT IDs (like IE3206488LH) to pass securely.
+        # ---------------------------------------------------------
+        nif_cif_pattern = re.compile(r'\b(?:[A-Z]{2})?[- ]?[A-Z]?[- ]?\d{6,9}[- ]?[A-Z0-9]{1,2}\b', re.IGNORECASE)
+        if tag_input == "factura" and not nif_cif_pattern.search(text):
+            if self.debug: print("  [Guardrail] 🛑 No valid NIF/CIF/VAT found.")
+            return "uncertain", "unknown", 0.40
+
+        return tag_input, company, None
+
+
+
     # ─────────────────────────────────────────────────────────────────
     # Result builder + revalidation
     # ─────────────────────────────────────────────────────────────────
@@ -423,6 +477,10 @@ class Classifier:
         # 2. Confidence Floor
         if confidence == 0.0 and tag_input not in ("uncertain", "unknown"):
             confidence = Config.FALLBACK_CONFIDENCE
+
+        tag_input, company_raw, penalty_confidence = self._apply_deterministic_guardrails(tag_input, company_raw, text)
+        if penalty_confidence is not None:
+            confidence = penalty_confidence
 
         # 3. Tag Normalization (Snapping to known prefixes)
         tag_clean = sanitise_filename(tag_input)
@@ -446,7 +504,7 @@ class Classifier:
                 tag_clean = "uncertain"
                 confidence = 0.40  # Hard drop below the 0.75 threshold
             else:
-                company_final = sanitise_filename(company_raw)
+                company_final = company_raw.strip()
         else:
             company_final = "unknown"
 

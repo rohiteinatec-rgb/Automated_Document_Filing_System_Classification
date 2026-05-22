@@ -18,7 +18,9 @@ class Config:
     # -- Ollama --
     ENVIRONMENT = ENV
     OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    OLLAMA_MODEL    = os.getenv("OLLAMA_MODEL", "qwen3:14b")
+    # OLLAMA_MODEL    = os.getenv("OLLAMA_MODEL", "qwen3:14b")
+    OLLAMA_MODEL_FAST = os.getenv("OLLAMA_MODEL_FAST", "qwen3:8b") # Fits 100% in 8GB VRAM
+    OLLAMA_MODEL_DEEP = os.getenv("OLLAMA_MODEL_DEEP", "qwen3:14b")  # Uses VRAM + 32GB RAM spillover
     OLLAMA_TIMEOUT_FAST = int(os.getenv("OLLAMA_TIMEOUT_FAST", "90"))   # 1.5 minute for fast scans
     OLLAMA_TIMEOUT_DEEP = int(os.getenv("OLLAMA_TIMEOUT_DEEP", "600"))  # 10 minutes for complex thinking
 
@@ -29,14 +31,14 @@ class Config:
         "num_ctx":     2048,
         "num_predict": 300,
         "temperature": 0.1,
-        "num_thread":  20,
+        "num_gpu":     -1,
     }
     # DEEP Scan path: tag unknown, full document scan reasoning, think:ON
     OLLAMA_OPTIONS_DEEP  = {
         "num_ctx":     6096,
         "num_predict": 2000,
         "temperature": 0.1,
-        "num_thread":  20,
+        "num_gpu":     -1,
     }
 
     # ── Database & Monitoring (from .env) ──
@@ -60,6 +62,7 @@ class Config:
     MEMORY_TRUST_THRESHOLD   = float(os.getenv("MEMORY_TRUST_THRESHOLD", "0.85"))    # PAGE1_CHARS              = 800
     # TAIL_CHARS               = 400
     # METADATA_CHARS           = 200
+    MAX_PAGES_TO_SCAN = 2
     VAGUE_TAGS               = {"other", "uncertain"}
 
     # -- Known tags --
@@ -106,7 +109,3 @@ class Config:
     @classmethod
     def get_all_tags(cls) -> list:
         return list(cls.TAG_FOLDERS.keys())
-
-    # Add to the very bottom of config.py
-    # print(f"  [Config] Booting in {Config.ENVIRONMENT.upper()} mode "
-    #   f"(Model: {Config.OLLAMA_MODEL} | DB: {'Enabled' if Config.DATABASE_ARCHIVAL_ENABLED else 'Disabled'})")

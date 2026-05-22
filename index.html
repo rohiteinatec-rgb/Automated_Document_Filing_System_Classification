@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GESDOC AI - Document Router</title>
+    <style>
+        :root { --primary: #3b82f6; --bg: #f8fafc; --card: #ffffff; --text: #1e293b; --border: #e2e8f0; }
+        body { font-family: -apple-system, system-ui, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; padding: 1.5rem; display: grid; grid-template-columns: 350px 1fr 400px; gap: 1.5rem; height: 100vh; box-sizing: border-box; }
+
+        /* Left: Sidebar Queue */
+        .sidebar { background: var(--card); border: 1px solid var(--border); border-radius: 12px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
+        .sidebar-header { padding: 1rem; background: #f1f5f9; border-bottom: 1px solid var(--border); }
+        .header-title { font-weight: 600; margin-bottom: 0.5rem; text-align: center; color: var(--text); }
+
+        /* The new sorting filter */
+        .sort-select { width: 100%; padding: 0.4rem; border: 1px solid #cbd5e1; border-radius: 4px; font-size: 0.85rem; color: #475569; outline: none; cursor: pointer; }
+
+        /* The scrollable list */
+        .file-list { overflow-y: auto; margin: 0; padding: 0; list-style: none; flex-grow: 1; }
+        .file-list::-webkit-scrollbar { width: 6px; }
+        .file-list::-webkit-scrollbar-thumb { background-color: #cbd5e1; border-radius: 4px; }
+        .file-item { padding: 0.8rem 1rem; border-bottom: 1px solid var(--border); cursor: pointer; font-size: 0.8rem; word-break: break-all; transition: background 0.1s; color: #334155; }
+        .file-item:hover { background: #f8fafc; }
+        .file-item.active { background: #eff6ff; border-left: 4px solid var(--primary); font-weight: bold; color: var(--primary); }
+
+        /* Middle: Preview Pane */
+        .preview-pane { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 1rem; display: flex; flex-direction: column; align-items: center; justify-content: center; overflow: hidden; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
+        .preview-pane img { max-width: 100%; max-height: 100%; object-fit: contain; border: 1px solid var(--border); }
+
+        /* Right: Router Form */
+        .router-pane { display: flex; flex-direction: column; justify-content: center; }
+        .router-card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 2rem; box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1); }
+        h1 { margin-top: 0; font-size: 1.5rem; text-align: center; }
+        p.subtitle { text-align: center; color: #64748b; margin-bottom: 2rem; font-size: 0.9rem; }
+
+        label { display: block; font-weight: 600; margin-bottom: 0.5rem; font-size: 0.95rem; }
+        select, input { width: 100%; padding: 0.75rem; border: 1px solid var(--border); border-radius: 6px; font-size: 1rem; margin-bottom: 1.5rem; box-sizing: border-box; }
+
+        button { width: 100%; background-color: var(--primary); color: white; border: none; padding: 1rem; font-size: 1.1rem; font-weight: 600; border-radius: 6px; cursor: pointer; transition: opacity 0.2s; }
+        button:hover { opacity: 0.9; }
+        button:disabled { background-color: #94a3b8; cursor: not-allowed; }
+
+        .status-bar { margin-top: 1.5rem; padding: 1rem; border-radius: 6px; background-color: #eff6ff; color: #1d4ed8; font-size: 0.9rem; text-align: center; display: none; }
+    </style>
+</head>
+<body>
+
+<div class="sidebar">
+    <div class="sidebar-header">
+        <div class="header-title" id="queue-counter">Uncertain Files (0)</div>
+        <select class="sort-select" id="sort-filter" onchange="sortQueue()">
+            <option value="newest">🕒 Newest First</option>
+            <option value="oldest">⏳ Oldest First</option>
+            <option value="az">🔤 A to Z</option>
+        </select>
+    </div>
+    <ul class="file-list" id="file-list">
+    </ul>
+</div>
+
+<div class="preview-pane">
+    <h3 id="preview-title" style="margin-top: 0; font-size: 1rem; color: #64748b;">Select a document to review</h3>
+    <img id="pdf-preview" src="" alt="Secure Document Preview" style="display: none;">
+</div>
+
+<div class="router-pane">
+    <div class="router-card">
+        <h1>Document Router</h1>
+        <p class="subtitle">Select the type of file and enter the issuing company name. The AI will learn from your classification.</p>
+
+        <form id="resolve-form">
+            <input type="hidden" id="current-filename">
+
+            <label for="tag-select">Type of File</label>
+            <select id="tag-select" required disabled>
+                <option value="" disabled selected>Select file type</option>
+                <option value="factura">Factura (Invoice)</option>
+                <option value="pressupost">Pressupost (Quote/Budget)</option>
+                <option value="work-contract">Work Contract</option>
+                <option value="other">Other / Archive</option>
+            </select>
+
+            <label for="company-input">Issuing Company Name</label>
+            <input type="text" id="company-input" placeholder="e.g. Endesa S.A." required disabled>
+
+            <button type="submit" id="submit-btn" disabled>Submit & Train AI</button>
+        </form>
+
+        <div id="status-message" class="status-bar"></div>
+    </div>
+</div>
+
+<script>
+    const API_BASE = "http://localhost:8000/api";
+    let currentQueue = [];
+    let activeFile = null;
+
+    // Smart Date Extractor: Pulls "YYYYMMDD_HHMMSS" out of the filename
+    function extractDate(filename) {
+        const match = filename.match(/_(\d{8}_\d{6})\.pdf$/i);
+        return match ? match[1] : filename;
+    }
+
+    // Sorting Logic
+    function sortQueue() {
+        const sortType = document.getElementById('sort-filter').value;
+        currentQueue.sort((a, b) => {
+            if (sortType === 'newest') {
+                return extractDate(b).localeCompare(extractDate(a));
+            } else if (sortType === 'oldest') {
+                return extractDate(a).localeCompare(extractDate(b));
+            } else {
+                return a.localeCompare(b); // Standard A-Z
+            }
+        });
+        renderSidebar();
+    }
+
+    // Fetch the queue on load
+    async function loadQueue() {
+        try {
+            const res = await fetch(`${API_BASE}/queue`);
+            const data = await res.json();
+            currentQueue = data.queue;
+
+            document.getElementById('queue-counter').innerText = `Uncertain Files (${data.count})`;
+
+            sortQueue(); // Sorts and calls renderSidebar()
+
+            // Auto-load the first file if none is selected
+            if (currentQueue.length > 0 && !activeFile) {
+                loadDocument(currentQueue[0]);
+            } else if (currentQueue.length === 0) {
+                clearViewer();
+            }
+        } catch (err) {
+            showStatus("Failed to connect to local backend.", true);
+        }
+    }
+
+    // Render the sidebar list
+    function renderSidebar() {
+        const listEl = document.getElementById('file-list');
+        listEl.innerHTML = "";
+
+        currentQueue.forEach(filename => {
+            const li = document.createElement('li');
+            li.className = `file-item ${filename === activeFile ? 'active' : ''}`;
+            li.innerText = filename;
+            li.onclick = () => loadDocument(filename);
+            listEl.appendChild(li);
+        });
+    }
+
+    // Load the secure PNG preview
+    function loadDocument(filename) {
+        activeFile = filename;
+        renderSidebar(); // Update highlight
+
+        document.getElementById('current-filename').value = filename;
+        document.getElementById('preview-title').innerText = `Reviewing: ${filename}`;
+
+        // Bypass browser cache for fresh loads
+        document.getElementById('pdf-preview').src = `${API_BASE}/preview/${filename}?t=${new Date().getTime()}`;
+        document.getElementById('pdf-preview').style.display = "block";
+
+        document.getElementById('tag-select').disabled = false;
+        document.getElementById('company-input').disabled = false;
+        document.getElementById('submit-btn').disabled = false;
+        document.getElementById('tag-select').value = "";
+        document.getElementById('company-input').value = "";
+    }
+
+    // Clear viewer when done
+    function clearViewer() {
+        activeFile = null;
+        document.getElementById('preview-title').innerText = "🎉 All caught up! No files to review.";
+        document.getElementById('pdf-preview').style.display = "none";
+        document.getElementById('tag-select').disabled = true;
+        document.getElementById('company-input').disabled = true;
+        document.getElementById('submit-btn').disabled = true;
+    }
+
+    // Handle the Submission
+    document.getElementById('resolve-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const btn = document.getElementById('submit-btn');
+        btn.disabled = true;
+        btn.innerText = "Processing...";
+
+        const payload = {
+            filename: document.getElementById('current-filename').value,
+            tag: document.getElementById('tag-select').value,
+            company: document.getElementById('company-input').value
+        };
+
+        try {
+            const res = await fetch(`${API_BASE}/resolve`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (res.ok) {
+                showStatus(`✅ Routed to /${payload.tag}/`);
+                activeFile = null;
+                setTimeout(() => {
+                    document.getElementById('status-message').style.display = 'none';
+                    loadQueue();
+                    btn.innerText = "Submit & Train AI";
+                }, 1500);
+            } else {
+                throw new Error("Backend rejected the resolution.");
+            }
+        } catch (err) {
+            showStatus("❌ Failed to resolve document.", true);
+            btn.disabled = false;
+            btn.innerText = "Submit & Train AI";
+        }
+    });
+
+    function showStatus(msg, isError = false) {
+        const el = document.getElementById('status-message');
+        el.innerText = msg;
+        el.style.backgroundColor = isError ? "#fef2f2" : "#eff6ff";
+        el.style.color = isError ? "#dc2626" : "#1d4ed8";
+        el.style.display = "block";
+    }
+
+    loadQueue();
+</script>
+</body>
+</html>
+
