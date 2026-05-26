@@ -224,6 +224,7 @@ async def process_folder(folder_path: str, debug: bool, dry_run: bool):
     aggregator.generate_html_dashboard()
 
 async def run():
+    Config.validate_security_patterns()
     parser = argparse.ArgumentParser(description="Invoice Document Classifier")
     parser.add_argument("--pdf", default=None, help="Single PDF to classify")
     parser.add_argument("--folder", default=None, help="Process all PDFs in folder")
