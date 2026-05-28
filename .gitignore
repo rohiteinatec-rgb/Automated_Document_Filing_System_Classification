@@ -21,6 +21,7 @@ test_suit_backup/
 SUPPLIERS/
 *.zip
 *.pdf
+*.env
 
 # 4. Outputs & Logs
 output/

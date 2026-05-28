@@ -3,6 +3,7 @@ import shutil
 import re
 import json
 import unicodedata
+import threading
 import secrets
 import errno
 from errors import PDFProcessingError
@@ -13,18 +14,22 @@ from sanitizer import sanitise_filename
 
 
 class Filer:
-
+    _log_lock = threading.Lock()
     def __init__(self, debug: bool = False):
         self.debug = debug
+        # Force log directory into Config.BASE_DIR
+        self.log_dir = os.path.join(Config.BASE_DIR, "logs")
+        os.makedirs(self.log_dir, exist_ok=True)
+        self.log_file = os.path.join(self.log_dir, "filing_log.jsonl")
 
     # ─────────────────────────────────────────────────────────────────
     # Filename builder  →  {tag}_{company}_{original}_{datetime}.pdf
     # ─────────────────────────────────────────────────────────────────
     def build_new_filename(self, tag: str, company: str,
-                           original_filename: str) -> str:
+                           original_stem: str) -> str:
 
-        clean_stem = self._strip_existing_tag(original_filename)
-        ext        = Path(original_filename).suffix.lower() or ".pdf"
+        clean_stem = self._strip_existing_tag(original_stem)
+        original_safe = sanitise_filename(clean_stem)
         dt_stamp   = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         tag_safe     = sanitise_filename(tag.lower())
@@ -32,10 +37,10 @@ class Filer:
 
         # Format: {tag}_{company}_{original}_{datetime}
         if company_safe and company_safe.lower() not in ("unknown", ""):
-            new_stem = f"{tag_safe}_{company_safe}_{clean_stem}_{dt_stamp}"
+            new_stem = f"{tag_safe}_{company_safe}_{original_safe}_{dt_stamp}"
         else:
         # No company extracted — keep format consistent, use placeholder
-            new_stem = f"{tag_safe}_unknown_{clean_stem}_{dt_stamp}"
+            new_stem = f"{tag_safe}_unknown_{original_safe}_{dt_stamp}"
 
         # Remove forbidden characters
         for ch in Config.FILENAME_FORBIDDEN_CHARS:
@@ -44,7 +49,7 @@ class Filer:
         while "__" in new_stem:
             new_stem = new_stem.replace("__", "_")
 
-        return new_stem + ext
+        return new_stem + ".pdf"
 
     def _strip_existing_tag(self, filename: str) -> str:
         """Prevent double-tagging: invoice_test.pdf → test"""
@@ -67,7 +72,8 @@ class Filer:
         tag               = classification.get("tag", "uncertain")
         company           = classification.get("company", "Unknown")
         confidence        = float(classification.get("confidence", 0.0))
-        original_filename = classification.get("original_filename", source.name)
+        #original_filename = classification.get("original_filename", source.name)
+        original_stem = Path(classification.get("original_filename", source.name)).stem
 
         # 🔴 NEW: The Operational Logic Gate
         # If confidence is low, or the AI explicitly rejected the file via the prompt rules
@@ -76,9 +82,10 @@ class Filer:
                 tag.lower() == "uncertain" or
                 company.lower() in ("unknown", "")
         )
-        safe_company = sanitise_filename(original_filename)
+        safe_company = sanitise_filename(original_stem)
         # Build new filename with datetime stamp
-        new_filename  = self.build_new_filename(tag, company, safe_company)
+        #new_filename  = self.build_new_filename(tag, company, safe_company)
+        new_filename  = self.build_new_filename(tag, company, original_stem)
 
         # 🔴 NEW: Dynamic Routing
         if needs_review:
@@ -114,7 +121,7 @@ class Filer:
                 f"(confidence={confidence:.2f})"
             )
 
-            self._log_action(str(source), str(target_path), action, message)
+            self.log_action(str(source), str(target_path), action, message)
 
             if self.debug:
                 print(f"  [Filer] {message}")
@@ -142,7 +149,7 @@ class Filer:
                 temp_path.unlink()
 
             msg = f"Unexpected filing error: {e}"
-            self._log_action(str(source), None, "error", msg)
+            self.log_action(str(source), None, "error", msg)
             raise PDFProcessingError(msg, PDFProcessingError.UNKNOWN_SYSTEM, pdf_path_for_errors)
 
     def _resolve_conflict(self, target: Path) -> Path:
@@ -155,7 +162,7 @@ class Filer:
 
         return target
 
-    def _log_action(self, source, destination, action, message):
+    def log_action(self, source, destination, action, message):
         """Writes the action directly to the hard drive immediately."""
         entry = {
             "timestamp":   datetime.now().isoformat(),
@@ -165,11 +172,9 @@ class Filer:
             "message":     message,
         }
 
-        log_path = Path(Config.OUTPUT_ROOT) / "filing_log.jsonl"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        with self._log_lock:
+            with open(self.log_file, "a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
     @staticmethod
     def _result(success, source, destination, action,

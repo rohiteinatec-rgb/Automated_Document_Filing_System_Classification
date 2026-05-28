@@ -16,7 +16,12 @@ from chunker import SemanticChunker
 from retriever import DocumentRetriever
 from sanitizer import sanitise_filename
 from security import run_full_security_check
+from pydantic import BaseModel, Field, ValidationError
 
+class LLMResponseSchema(BaseModel):
+    tag: str
+    company: str
+    confidence: float = Field(ge=0.0, le=1.0)
 
 class TagMemory:
     def __init__(self, debug: bool = False):
@@ -166,32 +171,33 @@ class Classifier:
             "format":  Config.OLLAMA_JSON_SCHEMA
         }
         timeout = aiohttp.ClientTimeout(total=Config.OLLAMA_TIMEOUT_FAST)
-        t_start = time.time()
-        try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(f"{Config.OLLAMA_BASE_URL}/api/generate", json=payload) as r:
-                    r.raise_for_status()
-                    data = await r.json()
+        max_retries = 3
+        for attempt in range(max_retries):
+            t_start = time.time()
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(f"{Config.OLLAMA_BASE_URL}/api/generate", json=payload) as r:
+                        r.raise_for_status()
+                        data = await r.json()
 
-                    t_elapsed_ms = (time.time() - t_start) * 1000
-                    self.metrics.record_metric(
-                        "classifier.latency_ms",
-                        t_elapsed_ms,
-                        {"stage": "fast_scan", "model": Config.OLLAMA_MODEL_FAST}
-                    )
+                        t_elapsed_ms = (time.time() - t_start) * 1000
+                        self.metrics.record_metric(
+                            "classifier.latency_ms",
+                            t_elapsed_ms,
+                            {"stage": "fast_scan", "model": Config.OLLAMA_MODEL_FAST}
+                        )
 
-                    raw = data.get("response", "")
-                    if self.debug:
-                        print(f"\n  [Ollama FAST] ({len(raw)} chars):\n  {raw[:400]}\n")
-                    return raw
-        except asyncio.TimeoutError:
-            raise PDFProcessingError(
-                f"Fast-Scan exceeded {Config.OLLAMA_TIMEOUT_FAST}s timeout",
-                PDFProcessingError.CLASSIFICATION_TIMEOUT
-            )
-        except Exception as e:
-            if self.debug:
-                print(f"  [Classifier] Ollama FAST error: {e}")
+                        raw = data.get("response", "")
+                        if self.debug:
+                            print(f"\n  [Ollama FAST] ({len(raw)} chars):\n  {raw[:400]}\n")
+                        return raw
+            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
+                if self.debug: print(f"  [Ollama FAST] ⚠️ Attempt {attempt + 1} failed: {e}")
+                if attempt == max_retries - 1:
+                    if self.debug: print("  [Ollama FAST] ❌ Max retries reached.")
+                    return ""
+                await asyncio.sleep(2 ** attempt)
+
         return ""
 
     async def _call_ollama_deep(self, system_prompt: str, user_text: str) -> str:
@@ -202,46 +208,46 @@ class Classifier:
         """
         payload = {
             "model":   Config.OLLAMA_MODEL_DEEP,
-            "system":  system_prompt,  # Strict system instructions
-            "prompt":  user_text,      # Inert document data
+            "system":  system_prompt,
+            "prompt":  user_text,
             "stream":  False,
             "think":   True,
             "options": Config.OLLAMA_OPTIONS_DEEP,
             "format":  Config.OLLAMA_JSON_SCHEMA
         }
         timeout = aiohttp.ClientTimeout(total=Config.OLLAMA_TIMEOUT_DEEP)
-        t_start = time.time()
-        try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(f"{Config.OLLAMA_BASE_URL}/api/generate", json=payload) as r:
-                    r.raise_for_status()
-                    data = await r.json()
+        max_retries = 2
 
-                    t_elapsed_ms = (time.time() - t_start) * 1000
-                    self.metrics.record_metric(
-                        "classifier.latency_ms",
-                        t_elapsed_ms,
-                        {"stage": "deep_scan", "model": Config.OLLAMA_MODEL_DEEP}
-                    )
+        for attempt in range(max_retries):
+            t_start = time.time()
+            try:
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(f"{Config.OLLAMA_BASE_URL}/api/generate", json=payload) as r:
+                        r.raise_for_status()
+                        data = await r.json()
 
-                    raw = data.get("response", "")
-                    if self.debug:
-                        think_match = re.search(r"<think>(.*?)</think>", raw, re.DOTALL)
-                        if think_match:
-                            thinking = think_match.group(1).strip()
-                            print(f"\n  [Qwen3 Thinking] ({len(thinking)} chars)\n  {thinking[:600]}\n")
-                        answer = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
-                        print(f"  [Classifier] QWEN RAW OUTPUT:\n  {answer[:500]}\n")
-                    return raw
+                        t_elapsed_ms = (time.time() - t_start) * 1000
+                        self.metrics.record_metric(
+                            "classifier.latency_ms",
+                            t_elapsed_ms,
+                            {"stage": "deep_scan", "model": Config.OLLAMA_MODEL_DEEP}
+                        )
 
-        except asyncio.TimeoutError:
-            raise PDFProcessingError(
-                f"Deep-Scan exceeded {Config.OLLAMA_TIMEOUT_DEEP}s timeout on CPU",
-                PDFProcessingError.CLASSIFICATION_TIMEOUT
-            )
-        except Exception as e:
-            if self.debug:
-                print(f"  [Classifier] Ollama DEEP error: {e}")
+                        raw = data.get("response", "")
+                        if self.debug:
+                            think_match = re.search(r"<think>(.*?)</think>", raw, re.DOTALL)
+                            if think_match:
+                                thinking = think_match.group(1).strip()
+                                print(f"\n  [Qwen3 Thinking] ({len(thinking)} chars)\n  {thinking[:600]}\n")
+                            answer = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+                            print(f"  [Classifier] QWEN RAW OUTPUT:\n  {answer[:500]}\n")
+                        return raw
+            except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as e:
+                if self.debug: print(f"  [Ollama DEEP] ⚠️ Attempt {attempt + 1} failed: {e}")
+                if attempt == max_retries - 1:
+                    return ""
+                await asyncio.sleep(2 ** attempt)
+
         return ""
 
     # ─────────────────────────────────────────────────────────────────
@@ -256,21 +262,35 @@ class Classifier:
             return {}
 
         try:
-            # We strip <think> blocks first, just in case they bleed into the raw string
+            # 1. We strip <think> blocks first, just in case they bleed into the raw string
             cleaned = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
 
-            # The API guarantees this will be perfectly parseable JSON
-            return json.loads(cleaned)
+            # 2. Extract ONLY the JSON block
+            json_match = re.search(r'\{.*?\}', cleaned, re.DOTALL)
+            if not json_match:
+                if self.debug: print("  [Classifier] ❌ No JSON object found in response.")
+                self.metrics.record_metric("classifier.parse_error", 1, {"error": "no_json"})
+                return {}
+
+            raw_json_str = json_match.group(0)
+
+            # 3. Parse string to Dict
+            parsed_json = json.loads(raw_json_str)
+
+            # 4. STRICT PYDANTIC VALIDATION
+            validated_model = LLMResponseSchema(**parsed_json)
+
+            return validated_model.model_dump()
 
         except json.JSONDecodeError as e:
-            if self.debug:
-                print(f"  [Classifier] ❌ Fatal API Schema Failure: {e}")
+            if self.debug: print(f"  [Classifier] ❌ JSON Syntax Error: {e}")
+            self.metrics.record_metric("classifier.parse_error", 1, {"error": "json_decode"})
             return {}
 
-        if self.debug:
-            print(f"  [Classifier] ❌ Parse failed. "
-                  f"Raw: {repr(cleaned[:400])}")
-        return {}
+        except ValidationError as e:
+            if self.debug: print(f"  [Classifier] ❌ Pydantic Schema Error: {e.errors()[0]['msg']}")
+            self.metrics.record_metric("classifier.parse_error", 1, {"error": "schema_violation"})
+            return {}
 
     # ─────────────────────────────────────────────────────────────────
     # Main classify: The Agentic Cascade
@@ -601,7 +621,7 @@ class Classifier:
         Your strict objective is to rapidly identify transactional business documents and reject all others.
 
         <rules>
-        1. IN-SCOPE CATEGORIES: [factura, pressupost, work-contract]. These require a clear issuer (supplier), recipient, and a quantified exchange of goods or services.
+        1. IN-SCOPE CATEGORIES: [factura, pressupost, work-contract, albara]. These require a clear issuer (supplier), recipient, and a quantified exchange of goods or services.
         2. THE REJECTION PROTOCOL: If the document is OUT-OF-SCOPE (e.g., Tax forms like Modelo 111/303, Government fines, HR payroll/nómina, or Bank ledgers/informe), you MUST output the tag "uncertain". This is a successful classification.
         3. THE ACTING ENTITY: Extract ONLY the SUPPLIER (the entity billing or providing the service). If the tag is "uncertain", company must be "unknown".
         4. DYNAMIC CONFIDENCE: You MUST calculate a realistic float between 0.0 and 1.0. Do not hardcode values.
@@ -611,7 +631,7 @@ class Classifier:
         
         <expected_output_format>
         {
-            "tag": "factura or pressupost or work-contract or uncertain",
+            "tag": "factura or pressupost or work-contract or albara or uncertain",
             "company": "Extracted Supplier Name or unknown",
             "confidence": <FLOAT_BETWEEN_0.0_AND_1.0>
         }
@@ -622,7 +642,7 @@ class Classifier:
         This document was flagged for low-confidence during triage. You must reason deeply past visual noise to classify it or safely reject it.
 
         <rules>
-        1. IN-SCOPE CATEGORIES: [factura, pressupost, work-contract]. Look past visual noise using first principles (e.g., an invoice requires tax breakdown/totals; a contract requires binding signatures).
+        1. IN-SCOPE CATEGORIES: [factura, pressupost, work-contract, albara]. Look past visual noise using first principles (e.g., an invoice requires tax breakdown/totals; a contract requires binding signatures).
         2. THE REJECTION PROTOCOL: If the document is OUT-OF-SCOPE (Marketing, Tax forms, Government notices, Payroll, Bank statements, or purely informational), you MUST output the tag "uncertain". Do not force it into a category.
         3. THE ACTING ENTITY: Extract ONLY the primary ISSUER/SUPPLIER. Do not extract the customer (the school).
         4. DYNAMIC CONFIDENCE: You MUST calculate a realistic float between 0.0 and 1.0 based on your forensic findings.
@@ -632,7 +652,7 @@ class Classifier:
         
         <expected_output_format>
         {
-            "tag": "factura or pressupost or work-contract or uncertain",
+            "tag": "factura or pressupost or work-contract or albara or uncertain",
             "company": "Extracted Supplier Name or unknown",
             "confidence": <FLOAT_BETWEEN_0.0_AND_1.0>
         }

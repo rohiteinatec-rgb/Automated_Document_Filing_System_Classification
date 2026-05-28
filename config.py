@@ -109,7 +109,7 @@ class Config:
     # -- Known tags --
     KNOWN_TAG_PREFIXES = [
         "factura", "invoice", "nomina", "work-contract",
-        "m111", "pressupost", "contracte", "albarans",
+        "m111", "pressupost", "contracte", "albarans", "albara",
         "informe", "other", "uncertain"
     ]
 
@@ -137,9 +137,10 @@ class Config:
         "pressupost":    "school-financial",
         "contracte":     "hr-contracts",
         "albarans":      "logistics",
+        "albara":        "logistics",
         "other":         "unclassified",
         "uncertain":     "UNCERTAIN",
-        "carta":         "correspondence",
+        "carta":         "correspondence", 
         "menu":          "menus",
         "comunicat":     "corporate-communications",
     }

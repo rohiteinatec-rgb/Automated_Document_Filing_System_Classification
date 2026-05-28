@@ -3,6 +3,8 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Optional
 
+from config import Config
+
 @dataclass
 class SecurityCheckResult:
     passed:         bool
@@ -33,9 +35,8 @@ def _nfkc(text: str) -> str:
 # --- LAYER A: PRE-LLM SANITIZATION ---
 def detect_and_sanitize(text: str, debug: bool = False) -> SecurityCheckResult:
     """
-    Scans for injection patterns and REDACTS them.
-    This is superior to rejection because it allows the pipeline to process
-    valid data hidden beneath the attack.
+    Scans for injection patterns. If ANY threat signature is found, the check FAILS.
+    We do not silently pass redacted text to the LLM (Zero-Trust Policy).
     """
     normalized = _nfkc(text)
     sanitized = text
@@ -52,7 +53,7 @@ def detect_and_sanitize(text: str, debug: bool = False) -> SecurityCheckResult:
             sanitized = pattern.sub(" [REDACTED_SECURITY_THREAT] ", sanitized)
 
     if hit_detected:
-        return SecurityCheckResult(passed=True, threat_type=top_threat, threat_score=0.8, sanitized_text=sanitized)
+        return SecurityCheckResult(passed=False, threat_type=top_threat, threat_score=1.0, sanitized_text=sanitized)
 
     return SecurityCheckResult(passed=True, sanitized_text=text)
 
@@ -75,26 +76,39 @@ def validate_document_structure(text: str, debug: bool = False) -> SecurityCheck
     return SecurityCheckResult(passed=True)
 
 # --- LAYER C: POST-LLM VALIDATION ---
-_ALLOWED_TAGS = {"factura", "pressupost", "work-contract", "uncertain"}
-
 def validate_llm_output(parsed: dict, original_text: str, debug: bool = False) -> SecurityCheckResult:
+    # 1. Check required keys
     required = {"tag", "company", "confidence"}
     if not required.issubset(parsed.keys()):
         if debug: print(f"  [Security] ❌ Output validation: missing keys")
         return SecurityCheckResult(passed=False, threat_type="schema_violation", threat_score=1.0)
 
+    # 2. 🔴 FIXED: Dynamically validate tags against Config's MASTER routing table
+    allowed_tags = {tag.lower() for tag in Config.get_all_tags()}
+
     tag = str(parsed.get("tag", "")).lower().strip()
-    if tag not in _ALLOWED_TAGS:
+    if tag not in allowed_tags:
         if debug: print(f"  [Security] ❌ Output validation: unknown tag '{tag}'")
         return SecurityCheckResult(passed=False, threat_type="unknown_tag", threat_score=0.9)
 
+    # 3. Validate Confidence Bounds
+    try:
+        conf_val = float(parsed.get("confidence", 0.0))
+        if not (0.0 <= conf_val <= 1.0):
+            if debug: print(f"  [Security] ❌ Output validation: confidence out of bounds ({conf_val})")
+            return SecurityCheckResult(passed=False, threat_type="invalid_confidence", threat_score=1.0)
+    except (ValueError, TypeError):
+        if debug: print(f"  [Security] ❌ Output validation: confidence must be a float")
+        return SecurityCheckResult(passed=False, threat_type="invalid_confidence", threat_score=1.0)
+
+    # 4. Validate Company injection echo
     company = str(parsed.get("company", "")).strip()
     if company.lower() not in ("unknown", ""):
         normalized_company = _nfkc(company)
         for pattern, threat_type in _COMPILED_SIGNATURES:
             if pattern.search(normalized_company):
                 if debug: print(f"  [Security] 🚨 Output validation: company field contains injection echo")
-                return SecurityCheckResult(passed=False, threat_type=f"company_injection_echo", threat_score=1.0)
+                return SecurityCheckResult(passed=False, threat_type="company_injection_echo", threat_score=1.0)
 
     return SecurityCheckResult(passed=True)
 
@@ -105,6 +119,10 @@ def run_full_security_check(text: str, parsed_output: Optional[dict] = None, deb
         # Layer A: Sanitize
         res_a = detect_and_sanitize(text, debug=debug)
         clean_text = res_a.sanitized_text
+
+        # If Layer A fails, immediately halt and reject the document
+        if not res_a.passed:
+            return False, res_a.threat_type, clean_text
 
         # Layer B: Structure
         res_b = validate_document_structure(clean_text, debug=debug)

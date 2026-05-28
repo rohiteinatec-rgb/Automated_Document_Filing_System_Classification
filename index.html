@@ -93,6 +93,9 @@
 
 <script>
     const API_BASE = "http://localhost:8000/api";
+    // 1. ADD YOUR SECURITY KEY
+    const API_KEY = "my_super_secret_dev_key_123";
+
     let currentQueue = [];
     let activeFile = null;
 
@@ -120,7 +123,14 @@
     // Fetch the queue on load
     async function loadQueue() {
         try {
-            const res = await fetch(`${API_BASE}/queue`);
+            // 2. SECURE THE QUEUE FETCH
+            const res = await fetch(`${API_BASE}/queue`, {
+                method: 'GET',
+                headers: { 'X-API-Key': API_KEY }
+            });
+
+            if (!res.ok) throw new Error("Unauthorized or server error");
+
             const data = await res.json();
             currentQueue = data.queue;
 
@@ -135,6 +145,7 @@
                 clearViewer();
             }
         } catch (err) {
+            console.error(err);
             showStatus("Failed to connect to local backend.", true);
         }
     }
@@ -154,22 +165,42 @@
     }
 
     // Load the secure PNG preview
-    function loadDocument(filename) {
+    async function loadDocument(filename) {
         activeFile = filename;
         renderSidebar(); // Update highlight
 
         document.getElementById('current-filename').value = filename;
         document.getElementById('preview-title').innerText = `Reviewing: ${filename}`;
 
-        // Bypass browser cache for fresh loads
-        document.getElementById('pdf-preview').src = `${API_BASE}/preview/${filename}?t=${new Date().getTime()}`;
-        document.getElementById('pdf-preview').style.display = "block";
+        // 3. SECURE THE IMAGE FETCH (The Blob Method)
+        try {
+            const response = await fetch(`${API_BASE}/preview/${filename}?t=${new Date().getTime()}`, {
+                method: 'GET',
+                headers: { 'X-API-Key': API_KEY }
+            });
 
-        document.getElementById('tag-select').disabled = false;
-        document.getElementById('company-input').disabled = false;
-        document.getElementById('submit-btn').disabled = false;
-        document.getElementById('tag-select').value = "";
-        document.getElementById('company-input').value = "";
+            if (!response.ok) throw new Error("Failed to load secure preview");
+
+            // Convert the secure response to an image blob
+            const imageBlob = await response.blob();
+            // Create a local memory URL for the browser to display
+            const imageUrl = URL.createObjectURL(imageBlob);
+
+            const imgElement = document.getElementById('pdf-preview');
+            imgElement.src = imageUrl;
+            imgElement.style.display = "block";
+
+            // Enable form inputs
+            document.getElementById('tag-select').disabled = false;
+            document.getElementById('company-input').disabled = false;
+            document.getElementById('submit-btn').disabled = false;
+            document.getElementById('tag-select').value = "";
+            document.getElementById('company-input').value = "";
+
+        } catch (error) {
+            console.error("Preview error:", error);
+            showStatus("❌ Blocked: Unable to load secure document.", true);
+        }
     }
 
     // Clear viewer when done
@@ -196,9 +227,13 @@
         };
 
         try {
+            // 4. SECURE THE RESOLUTION POST
             const res = await fetch(`${API_BASE}/resolve`, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json',
+                    'X-API-Key': API_KEY
+                },
                 body: JSON.stringify(payload)
             });
 

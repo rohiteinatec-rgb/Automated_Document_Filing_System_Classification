@@ -1,8 +1,7 @@
 import logging
 import apprise
-from logger import adfs_logger
 from apprise import NotifyType
-from logger import adfs_logger
+from logger import adfs_logger # Removed duplicate import
 from config import Config
 
 class PDFProcessingError(Exception):
@@ -27,10 +26,20 @@ class AlertManager:
 
     """Universal Alert Manager using Apprise for Local Privacy."""
 
-    # We initialize the Apprise object once
-    _apobj = apprise.Apprise()
-    if Config.APPRISE_URL:
-        _apobj.add(Config.APPRISE_URL)
+    # 🔴 FIXED: Set to None initially. Do not boot Apprise at import time!
+    _apobj = None
+
+    @classmethod
+    def get_notifier(cls):
+        """Lazy-loader: Only boots Apprise when the first error actually happens."""
+        if cls._apobj is None:
+            try:
+                cls._apobj = apprise.Apprise()
+                if Config.APPRISE_URL:
+                    cls._apobj.add(Config.APPRISE_URL)
+            except Exception as e:
+                adfs_logger.error(f"Failed to initialize Apprise: {e}", extra={"stage": "alert_manager"})
+        return cls._apobj
 
     @classmethod
     def send_alert(cls, error_type: str, message: str, severity: str = "WARNING"):
@@ -46,7 +55,7 @@ class AlertManager:
         else:
             adfs_logger.warning(message, extra={"stage": "alert_manager", "error_type": error_type})
 
-        # 2. Apprise Universal Notification (Only for HIGH/CRITICAL)
+        # Apprise Universal Notification (Only for HIGH/CRITICAL)
         if severity in ["HIGH", "CRITICAL"] and Config.APPRISE_URL:
             cls._send_via_apprise(error_type, message, severity)
 
@@ -61,10 +70,13 @@ class AlertManager:
         if severity == "CRITICAL": n_type = apprise.NotifyType.FAILURE
 
         try:
-            cls._apobj.notify(
-                title=title,
-                body=message,
-                notify_type=n_type
-            )
+            # 🔴 FIXED: Safely fetch the lazy-loaded notifier
+            notifier = cls.get_notifier()
+            if notifier:
+                notifier.notify(
+                    title=title,
+                    body=message,
+                    notify_type=n_type
+                )
         except Exception as e:
             print(f"  [AlertManager] Apprise failed: {e}")
