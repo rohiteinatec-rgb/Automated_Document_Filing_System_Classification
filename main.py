@@ -28,6 +28,7 @@ from config import Config
 from reader import PDFReader
 from classifier import Classifier
 from filer import Filer
+from metrics import MetricsAggregator
 
 class DocumentAutoFiler:
     def __init__(self, debug: bool = False, dry_run: bool = False):

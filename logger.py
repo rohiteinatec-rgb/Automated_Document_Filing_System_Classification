@@ -1,6 +1,10 @@
 import logging
+import os
 from logging.handlers import RotatingFileHandler
 import json
+
+from config import Config
+
 
 class StructuredFormatter(logging.Formatter):
     def format(self, record):
@@ -25,7 +29,8 @@ def setup_logger():
     logger.setLevel(logging.DEBUG)
 
     # File handler: 100MB per file, keep 10 backups
-    fh = RotatingFileHandler("adfs.log", maxBytes=100 * 1024 * 1024, backupCount=10)
+    log_file = os.path.join(Config.BASE_DIR, "adfs.log")
+    fh = RotatingFileHandler(log_file, maxBytes=100 * 1024 * 1024, backupCount=10)
     fh.setLevel(logging.DEBUG)
 
     # Attach the structured JSON formatter

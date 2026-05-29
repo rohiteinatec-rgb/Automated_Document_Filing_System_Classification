@@ -445,7 +445,8 @@ class Classifier:
         core_company = re.sub(r'[^a-z0-9]', '', core_company)
 
         if not core_company:
-            core_company = normalize_extreme(company) # Fallback if name was just a suffix
+            _company_no_accents = unicodedata.normalize('NFKD', company).encode('ASCII', 'ignore').decode('utf-8')
+            core_company = re.sub(r'[^a-z0-9]', '', _company_no_accents.lower()) # Fallback if name was just a suffix
 
         # 3. Direct Match Check
         if core_company in norm_text:

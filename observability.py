@@ -1,4 +1,5 @@
 import time
+import os
 import shutil
 import requests
 import json
@@ -9,7 +10,7 @@ from errors import AlertManager
 
 class ObservabilityManager:
     def __init__(self, metrics_log: str = "adfs_metrics.jsonl"):
-        self.metrics_log = metrics_log
+        self.metrics_log = os.path.join(Config.BASE_DIR, metrics_log)
         self.metrics: List[Dict] = []
 
         # Ensure the log file exists
@@ -36,7 +37,7 @@ class ObservabilityManager:
 
         # 2. Output Disk Space Check (Require at least 1GB)
         try:
-            output_dir = Path(Config.OUTPUT_DIR)
+            output_dir = Path(Config.OUTPUT_ROOT)
             output_dir.mkdir(parents=True, exist_ok=True)
             total, used, free = shutil.disk_usage(output_dir)
             free_gb = free // (2**30)
