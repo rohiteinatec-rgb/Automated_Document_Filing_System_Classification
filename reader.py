@@ -124,43 +124,52 @@ class PDFReader:
             safe_pages = list(range(safe_page_count))
 
             # ── Tier 1: Markdown ──────────────────────────────────
-            # Only process up to 50 pages using the safe_pages list
-            markdown_text = pymupdf4llm.to_markdown(pdf_path, pages=safe_pages)
-            eval_result   = gate.evaluate(markdown_text)
+            # If pymupdf4llm crashes, it will print a warning and naturally fall down to Tier 2.
+            try:
+                markdown_text = pymupdf4llm.to_markdown(pdf_path, pages=safe_pages)
+                eval_result   = gate.evaluate(markdown_text)
 
-            if eval_result["passed"]:
-                final = cls._sanitize_document_text(markdown_text)
-                if debug: cls._print_extraction_stats(final, "digital-markdown")
-                return final, "digital-markdown"
+                if eval_result.get("passed", False):
+                    final = cls._sanitize_document_text(markdown_text)
+                    if debug: cls._print_extraction_stats(final, "digital-markdown")
+                    return final, "digital-markdown"
 
-            if debug: print(f"  [Reader] Tier 1 weak ({eval_result['issues']}). Falling back...")
+                if debug: print(f"  [Reader] Tier 1 weak ({eval_result.get('issues', 'Unknown')}). Falling back...")
+            except Exception as tier1_error:
+                if debug: print(f"  [Reader] ⚠️ Tier 1 (Markdown) crashed: {tier1_error}. Seamlessly falling back to Tier 2...")
 
             # ── Tier 2: Clean Sequential ──────────────────────────
             with fitz.open(pdf_path) as doc:
-                smart_text = cls._clean_text_extract(doc)
-                eval2 = gate.evaluate(smart_text)
+                # UPDATE 3: Wrapped Tier 2 in its own try/except block.
+                try:
+                    smart_text = cls._clean_text_extract(doc)
+                    eval2 = gate.evaluate(smart_text)
 
-                if eval2["passed"]:
-                    final = cls._sanitize_document_text(smart_text)
-                    if debug: cls._print_extraction_stats(final, "clean-text")
-                    return final, "clean-text"
+                    if eval2.get("passed", False):
+                        final = cls._sanitize_document_text(smart_text)
+                        if debug: cls._print_extraction_stats(final, "clean-text")
+                        return final, "clean-text"
+                except Exception as tier2_error:
+                    if debug: print(f"  [Reader] ⚠️ Tier 2 crashed: {tier2_error}. Seamlessly falling back to Tier 3...")
 
                 # ── Tier 3: Raw fallback ──────────────────────────────
-                if debug: print("  [Reader] Tier 2 weak. Raw fallback...")
+                if debug: print("  [Reader] Tier 2 weak/failed. Raw fallback...")
 
-                raw_text_parts = []
-                for i in range(safe_page_count):
-                    raw_text_parts.append(doc[i].get_text("text"))
-                raw_text = "\n".join(raw_text_parts)
+                try:
+                    raw_text_parts = []
+                    for i in range(safe_page_count):
+                        raw_text_parts.append(doc[i].get_text("text"))
+                    raw_text = "\n".join(raw_text_parts)
 
-                eval3 = gate.evaluate(raw_text)
+                    eval3 = gate.evaluate(raw_text)
 
-                if eval3["passed"] or len(raw_text.strip()) > 50:
-                    final = cls._sanitize_document_text(raw_text)
-                    if debug: cls._print_extraction_stats(final, "raw-fallback")
-                    return final, "raw-fallback"
+                    if eval3.get("passed", False) or len(raw_text.strip()) > 50:
+                        final = cls._sanitize_document_text(raw_text)
+                        if debug: cls._print_extraction_stats(final, "raw-fallback")
+                        return final, "raw-fallback"
+                except Exception as tier3_error:
+                    if debug: print(f"  [Reader] ⚠️ Tier 3 crashed: {tier3_error}. Seamlessly falling back to Tier 4...")
 
-                # ⭐ TIER 4: OCR (Last resort, very slow) ⭐
                 if cls._contains_images(doc):
                     if debug: print("  [Reader] No text found, images detected. Triggering OCR...")
 
@@ -176,7 +185,7 @@ class PDFReader:
             return "", "failed-all"
 
         except Exception as e:
-            if debug: print(f"  [Reader] Extraction failed: {e}")
+            if debug: print(f"  [Reader] Fatal extraction error: {e}")
             return "", "error"
 
     @classmethod
